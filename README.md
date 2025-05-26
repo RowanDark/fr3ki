@@ -77,26 +77,6 @@ headers:
   - "X-Api-Key: testkey"
 Any CLI flag will override config file values.
 
-## Banner
-
-  / ____/___|__  // /__(_)
-  / /_  / ___//_ </ //_/ / 
- / __/ / /  ___/ / ,< / /  
-/_/   /_/  /____/_/|_/_/   
-
-          fr3ki   © 2025 RowanDark
-
-                 .
-                / V\
-              / `  /
-             <<   |
-             /    |
-           /      |
-         /        |
-       /    \  \ /
-      (      ) | |
-  ____|   _/_  | |
-<______\______)\__)
 
 Support My Work
 If you found fr3ki useful, please consider supporting via Ko-fi!
