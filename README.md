@@ -4,6 +4,8 @@
 
 **fr3ki** is an advanced asynchronous fuzzer designed for bug bounty hunters, penetration testers, and red teamers. It features high concurrency, payload obfuscation, proxy rotation, adaptive throttling, and much more—all in a single extensible Python tool.
 
+**NOTE** Only use this on programs and applications that you are authorized to perform research and testing on!  Failure to do is considered illegal in most jurisdictions, and you do so at your own risk!
+
 ---
 
 ## Features
