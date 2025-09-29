@@ -12,7 +12,6 @@ import base64
 import urllib.parse
 import yaml
 
-# Venv check & rich check (prints instructions if missing)
 def _check_venv():
     if sys.prefix == sys.base_prefix:
         print("\n[bold yellow]⚠️  You are NOT in a virtual environment.[/bold yellow]")
@@ -56,7 +55,6 @@ def print_banner():
 <______\______)\__)
 """)
 
-# Config load (YAML fallback)
 def load_config(config_file):
     try:
         with open(config_file, 'r') as file:
@@ -66,15 +64,12 @@ def load_config(config_file):
         print("[yellow]Config file not found. Using default settings.[/yellow]")
         return {}
 
-# Chunk utility
 def chunked(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
-# Obfuscation (toggleable)
 def obfuscate_payload(word):
     payloads = [word]
-    # URL, Base64, Hex, Slash-encode, Unicode, Double URL
     payloads.append(urllib.parse.quote(word))
     payloads.append(base64.b64encode(word.encode()).decode())
     payloads.append(''.join(['%{:02x}'.format(ord(c)) for c in word]))
@@ -83,12 +78,10 @@ def obfuscate_payload(word):
     payloads.append(urllib.parse.quote(urllib.parse.quote(word)))
     return list(set(payloads))
 
-# Incremental save (silent)
 def incremental_save(entry, filename):
     with open(filename, 'a') as f:
         f.write(json.dumps(entry) + "\n")
 
-# Proxy loader
 def load_proxies(proxy_file):
     try:
         with open(proxy_file, 'r') as f:
@@ -102,7 +95,6 @@ def get_random_proxy(proxies):
         return random.choice(proxies)
     return None
 
-# User-Agent and headers
 def random_user_agent():
     agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/91.0.4472.124 Safari/537.36",
@@ -121,7 +113,6 @@ def generate_headers(custom_headers=None):
         "Connection": "keep-alive"
     }
     if custom_headers:
-        # Custom headers override built-ins
         for h in custom_headers:
             parts = h.split(":", 1)
             if len(parts) == 2:
@@ -129,7 +120,6 @@ def generate_headers(custom_headers=None):
                 headers[k.strip()] = v.strip()
     return headers
 
-# The fuzzer itself (feature complete)
 async def fr3ki_fuzzer(
     base_url, wordlist, threads, verbose, output, obfuscate, rate,
     cooldown, debug, proxy_file, custom_headers
@@ -169,9 +159,7 @@ async def fr3ki_fuzzer(
                                         entry["snippet"] = resp.text[:200]
                                     if debug or (resp.status_code in [200,201,202,204] or len(resp.content) > 1000 or 'admin' in url or 'secure' in url):
                                         incremental_save(entry, output)
-                                    # Adaptive 429
                                     if resp.status_code == 429:
-                                        # Support Retry-After
                                         retry_after = resp.headers.get('Retry-After')
                                         cooldown_time = int(retry_after) if retry_after and retry_after.isdigit() else cooldown
                                         print(f"[yellow]429 received, cooling down for {cooldown_time} seconds.[/yellow]")
@@ -189,7 +177,6 @@ async def fr3ki_fuzzer(
                         tasks += [fetch_url(url, req_kwargs) for payload in payloads]
                 await asyncio.gather(*tasks)
                 progress.update(task, advance=len(chunk))
-                # Add random interval for anti-WAF
                 await asyncio.sleep(random.uniform(0.5, 2.0))
 
 def main():
