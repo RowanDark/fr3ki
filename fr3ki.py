@@ -166,10 +166,9 @@ async def fr3ki_fuzzer(
     # Fix #12: counters for summary
     counter = [0, 0]  # [total_requests, interesting_results]
 
-    # Fix #5: fetch_url defined once, outside all loops
-    # Fix #3: proxy set at client construction, not per-request
-    # Fix #13: distinguish timeout vs connection errors
-    # Fix #14: use client.request(method, ...) instead of client.get()
+    # Shared client for requests without a proxy (preserves connection pooling)
+    shared_client = httpx.AsyncClient(timeout=10, follow_redirects=True)
+
     async def fetch_url(url, proxy, headers):
         async with sem:
             # Fix #4: acquire global rate limiter
@@ -177,10 +176,12 @@ async def fr3ki_fuzzer(
             # Fix #10: per-request jitter for evasion
             await asyncio.sleep(random.uniform(0.05, 0.3))
             try:
-                # Fix #3: create client with proxy in constructor
-                proxy_map = {"http://": proxy, "https://": proxy} if proxy else None
-                async with httpx.AsyncClient(timeout=10, follow_redirects=True, proxies=proxy_map) as client:
-                    resp = await client.request(method, url, headers=headers)
+                if proxy:
+                    proxy_map = {"http://": proxy, "https://": proxy}
+                    async with httpx.AsyncClient(timeout=10, follow_redirects=True, proxies=proxy_map) as client:
+                        resp = await client.request(method, url, headers=headers)
+                else:
+                    resp = await shared_client.request(method, url, headers=headers)
                 counter[0] += 1
                 entry = {
                     "url": url,
@@ -198,18 +199,25 @@ async def fr3ki_fuzzer(
                     cooldown_time = int(retry_after) if retry_after and retry_after.isdigit() else cooldown
                     print(f"[yellow]429 received, cooling down for {cooldown_time} seconds.[/yellow]")
                     await asyncio.sleep(cooldown_time)
-                # Fix #8: 403 backoff
-                if resp.status_code == 403:
+                elif resp.status_code == 403:
                     print(f"[yellow]403 received for {url}, backing off for {cooldown // 2} seconds.[/yellow]")
                     await asyncio.sleep(cooldown // 2)
-                # Fix #15: filter codes from output
+
                 if resp.status_code not in filter_codes:
                     if resp.status_code in {200, 201, 202, 204}:
                         print(f"[green]{url} [{resp.status_code}][/green]")
+                    elif resp.status_code in {301, 302, 307, 308}:
+                        print(f"[cyan]{url} [{resp.status_code} Redirect][/cyan]")
+                    elif resp.status_code == 401:
+                        print(f"[yellow]{url} [{resp.status_code} Unauthorized][/yellow]")
                     elif resp.status_code == 403:
                         print(f"[yellow]{url} [{resp.status_code} Forbidden][/yellow]")
                     elif resp.status_code == 404:
-                        print(f"[cyan]{url} [{resp.status_code} Not Found][/cyan]")
+                        print(f"[dim]{url} [{resp.status_code} Not Found][/dim]")
+                    elif resp.status_code == 405:
+                        print(f"[yellow]{url} [{resp.status_code} Method Not Allowed][/yellow]")
+                    elif resp.status_code in {500, 502, 503}:
+                        print(f"[bold red]{url} [{resp.status_code} Server Error][/bold red]")
                     else:
                         print(f"[red]{url} [{resp.status_code}][/red]")
             except httpx.TimeoutException:
@@ -234,6 +242,8 @@ async def fr3ki_fuzzer(
             await asyncio.gather(*tasks)
             progress.update(task, advance=len(chunk))
             # Fix #10: removed chunk-level sleep (jitter is per-request now)
+
+    await shared_client.aclose()
 
     # Fix #12: output summary
     print(f"\n[bold green]✓ Fuzzing complete.[/bold green] {counter[0]} requests sent. Results saved to [cyan]{output}[/cyan]")
