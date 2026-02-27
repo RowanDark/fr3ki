@@ -231,6 +231,13 @@ async def fr3ki_fuzzer(
     else:
         payload_sets = list(itertools.product(*all_words))
 
+    if obfuscate and len(wordlists) > 1:
+        estimated = 1
+        for words in all_words:
+            estimated *= len(words)
+        if estimated > 100000:
+            print(f"[yellow]Warning: --obfuscate with multiple wordlists will generate ~{estimated:,} combinations. This may take a very long time.[/yellow]")
+
     sem = asyncio.Semaphore(threads)
     # Fix #4: instantiate global rate limiter
     limiter = RateLimiter(rate)
@@ -343,11 +350,11 @@ async def fr3ki_fuzzer(
                     print(f"[yellow]403 received for {url}, backing off for {cooldown // 2} seconds.[/yellow]")
                     await asyncio.sleep(cooldown // 2)
 
-                if resp.status_code not in filter_codes:
-                    # Match highlight (Issue 3)
-                    if match_string or match_regex:
-                        print(f"[bold magenta]✓ MATCH: {url} [{resp.status_code}] ({response_size} bytes)[/bold magenta]")
+                # Match highlight (Issue 3)
+                if match_string or match_regex:
+                    print(f"[bold magenta]✓ MATCH: {url} [{resp.status_code}] ({response_size} bytes)[/bold magenta]")
 
+                if resp.status_code not in filter_codes:
                     if resp.status_code in {200, 201, 202, 204}:
                         print(f"[green]{url} [{resp.status_code}][/green]")
                     elif resp.status_code in {301, 302, 307, 308}:
@@ -475,6 +482,9 @@ def main():
     parser.add_argument('--recursion-depth', type=int, default=2,
                         help='Maximum recursion depth (default: 2)')
     args = parser.parse_args()
+
+    if args.resume and args.format != 'jsonl':
+        print("[yellow]Warning: --resume only supports --format jsonl. Resume data will not be loaded.[/yellow]")
 
     # Handle wordlist default for backward compatibility
     if args.wordlists is None:
