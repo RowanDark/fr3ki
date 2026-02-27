@@ -4,17 +4,16 @@ import sys
 import os
 import argparse
 import asyncio
-import httpx
 import random
 import time
 import json
 import base64
 import urllib.parse
-import yaml
 
+# Fix #2: venv check BEFORE rich import, using only builtin print
 def _check_venv():
     if sys.prefix == sys.base_prefix:
-        print("\n[bold yellow]⚠️  You are NOT in a virtual environment.[/bold yellow]")
+        print("\nWarning: You are NOT in a virtual environment.")
         print("For best results, run:")
         print("    python3 -m venv fr3ki_env")
         print("    source fr3ki_env/bin/activate")
@@ -23,22 +22,27 @@ def _check_venv():
         print("    pip install rich httpx pyyaml\n")
         print("Then re-run this script!")
         sys.exit(1)
+
+_check_venv()
+
 try:
     from rich import print
     from rich.progress import Progress
 except ImportError:
     print("You need the 'rich' library for color output.\nInstall with: pip install rich\n")
     sys.exit(1)
-_check_venv()
+
+import httpx
+import yaml
 
 # Banner
 def print_banner():
     print(r"""
-    ______    _____ __   _ 
+    ______    _____ __   _
    / ____/___|__  // /__(_)
-  / /_  / ___//_ </ //_/ / 
- / __/ / /  ___/ / ,< / /  
-/_/   /_/  /____/_/|_/_/   
+  / /_  / ___//_ </ //_/ /
+ / __/ / /  ___/ / ,< / /
+/_/   /_/  /____/_/|_/_/
 
           fr3ki   © 2025 [bold red]RowanDark[/bold red]
 
@@ -120,64 +124,120 @@ def generate_headers(custom_headers=None):
                 headers[k.strip()] = v.strip()
     return headers
 
+
+# Fix #4: Global rate limiter class
+class RateLimiter:
+    def __init__(self, rate):
+        self.rate = rate  # requests per second
+        self.tokens = rate
+        self.last_refill = time.monotonic()
+        self.lock = asyncio.Lock()
+
+    async def acquire(self):
+        if self.rate <= 0:
+            return
+        async with self.lock:
+            now = time.monotonic()
+            elapsed = now - self.last_refill
+            self.tokens = min(self.rate, self.tokens + elapsed * self.rate)
+            self.last_refill = now
+            if self.tokens < 1:
+                wait = (1 - self.tokens) / self.rate
+                await asyncio.sleep(wait)
+                self.tokens = 0
+            else:
+                self.tokens -= 1
+
+
+# Fix #9: Interesting status codes set
+INTERESTING_CODES = {200, 201, 202, 204, 301, 302, 307, 308, 401, 403, 405, 500}
+
+
 async def fr3ki_fuzzer(
     base_url, wordlist, threads, verbose, output, obfuscate, rate,
-    cooldown, debug, proxy_file, custom_headers
+    cooldown, debug, proxy_file, custom_headers, method, filter_codes
 ):
     proxies = load_proxies(proxy_file) if proxy_file else []
     with open(wordlist) as f:
         words = [line.strip() for line in f if line.strip()]
     sem = asyncio.Semaphore(threads)
-    results = []
+    # Fix #4: instantiate global rate limiter
+    limiter = RateLimiter(rate)
+    # Fix #12: counters for summary
+    counter = [0, 0]  # [total_requests, interesting_results]
 
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-        with Progress() as progress:
-            task = progress.add_task("[cyan]Fuzzing with fr3ki...[/cyan]", total=len(words))
-            for chunk in chunked(words, threads):
-                tasks = []
-                for word in chunk:
-                    payloads = obfuscate_payload(word) if obfuscate else [word]
-                    for payload in payloads:
-                        url = base_url.replace("FUZZ", payload)
-                        proxy = get_random_proxy(proxies)
-                        headers = generate_headers(custom_headers)
-                        req_kwargs = {'headers': headers}
-                        if proxy:
-                            req_kwargs['proxies'] = {"http://": proxy, "https://": proxy}
-                        async def fetch_url(url, req_kwargs, word=word):
-                            async with sem:
-                                if rate > 0:
-                                    await asyncio.sleep(1/rate)
-                                try:
-                                    resp = await client.get(url, **req_kwargs)
-                                    entry = {
-                                        "url": url,
-                                        "status_code": resp.status_code,
-                                        "length": len(resp.content)
-                                    }
-                                    if verbose:
-                                        entry["snippet"] = resp.text[:200]
-                                    if debug or (resp.status_code in [200,201,202,204] or len(resp.content) > 1000 or 'admin' in url or 'secure' in url):
-                                        incremental_save(entry, output)
-                                    if resp.status_code == 429:
-                                        retry_after = resp.headers.get('Retry-After')
-                                        cooldown_time = int(retry_after) if retry_after and retry_after.isdigit() else cooldown
-                                        print(f"[yellow]429 received, cooling down for {cooldown_time} seconds.[/yellow]")
-                                        await asyncio.sleep(cooldown_time)
-                                    if resp.status_code in [200,201,202,204]:
-                                        print(f"[green]{url} [{resp.status_code}][/green]")
-                                    elif resp.status_code == 403:
-                                        print(f"[yellow]{url} [{resp.status_code} Forbidden][/yellow]")
-                                    elif resp.status_code == 404:
-                                        print(f"[cyan]{url} [{resp.status_code} Not Found][/cyan]")
-                                    else:
-                                        print(f"[red]{url} [{resp.status_code}][/red]")
-                                except Exception as e:
-                                    print(f"[red]Error with {url}: {e}[/red]")
-                        tasks += [fetch_url(url, req_kwargs) for payload in payloads]
-                await asyncio.gather(*tasks)
-                progress.update(task, advance=len(chunk))
-                await asyncio.sleep(random.uniform(0.5, 2.0))
+    # Fix #5: fetch_url defined once, outside all loops
+    # Fix #3: proxy set at client construction, not per-request
+    # Fix #13: distinguish timeout vs connection errors
+    # Fix #14: use client.request(method, ...) instead of client.get()
+    async def fetch_url(url, proxy, headers):
+        async with sem:
+            # Fix #4: acquire global rate limiter
+            await limiter.acquire()
+            # Fix #10: per-request jitter for evasion
+            await asyncio.sleep(random.uniform(0.05, 0.3))
+            try:
+                # Fix #3: create client with proxy in constructor
+                proxy_map = {"http://": proxy, "https://": proxy} if proxy else None
+                async with httpx.AsyncClient(timeout=10, follow_redirects=True, proxies=proxy_map) as client:
+                    resp = await client.request(method, url, headers=headers)
+                counter[0] += 1
+                entry = {
+                    "url": url,
+                    "status_code": resp.status_code,
+                    "length": len(resp.content)
+                }
+                if verbose:
+                    entry["snippet"] = resp.text[:200]
+                # Fix #9: improved interesting filter
+                if debug or resp.status_code in INTERESTING_CODES or len(resp.content) > 500:
+                    incremental_save(entry, output)
+                    counter[1] += 1
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get('Retry-After')
+                    cooldown_time = int(retry_after) if retry_after and retry_after.isdigit() else cooldown
+                    print(f"[yellow]429 received, cooling down for {cooldown_time} seconds.[/yellow]")
+                    await asyncio.sleep(cooldown_time)
+                # Fix #8: 403 backoff
+                if resp.status_code == 403:
+                    print(f"[yellow]403 received for {url}, backing off for {cooldown // 2} seconds.[/yellow]")
+                    await asyncio.sleep(cooldown // 2)
+                # Fix #15: filter codes from output
+                if resp.status_code not in filter_codes:
+                    if resp.status_code in {200, 201, 202, 204}:
+                        print(f"[green]{url} [{resp.status_code}][/green]")
+                    elif resp.status_code == 403:
+                        print(f"[yellow]{url} [{resp.status_code} Forbidden][/yellow]")
+                    elif resp.status_code == 404:
+                        print(f"[cyan]{url} [{resp.status_code} Not Found][/cyan]")
+                    else:
+                        print(f"[red]{url} [{resp.status_code}][/red]")
+            except httpx.TimeoutException:
+                print(f"[yellow]Timeout: {url}[/yellow]")
+            except httpx.ConnectError:
+                print(f"[red]Connection error: {url}[/red]")
+            except Exception as e:
+                print(f"[red]Error with {url}: {e}[/red]")
+
+    with Progress() as progress:
+        task = progress.add_task("[cyan]Fuzzing with fr3ki...[/cyan]", total=len(words))
+        for chunk in chunked(words, threads):
+            tasks = []
+            # Fix #1: single payload iteration, no double loop
+            for word in chunk:
+                payloads = obfuscate_payload(word) if obfuscate else [word]
+                for payload in payloads:
+                    url = base_url.replace("FUZZ", payload)
+                    proxy = get_random_proxy(proxies)
+                    headers = generate_headers(custom_headers)
+                    tasks.append(fetch_url(url, proxy, headers))
+            await asyncio.gather(*tasks)
+            progress.update(task, advance=len(chunk))
+            # Fix #10: removed chunk-level sleep (jitter is per-request now)
+
+    # Fix #12: output summary
+    print(f"\n[bold green]✓ Fuzzing complete.[/bold green] {counter[0]} requests sent. Results saved to [cyan]{output}[/cyan]")
+
 
 def main():
     print_banner()
@@ -194,13 +254,22 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='Include response snippet')
     parser.add_argument('--proxies', default=config.get('proxies', ''), help='File containing list of proxies')
     parser.add_argument('-A', '--header', action='append', default=config.get('headers', []), help='Custom header (e.g. -A "X-Token:123")', dest='custom_headers')
+    # Fix #14: --method flag
+    parser.add_argument('--method', default='GET', choices=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS', 'PATCH'], help='HTTP method to use (default: GET)')
+    # Fix #15: --filter-code flag
+    parser.add_argument('--filter-code', type=int, action='append', dest='filter_codes', default=[404], help='Status codes to suppress from output (default: 404)')
     args = parser.parse_args()
+
+    # Fix #6: FUZZ keyword validation
+    if "FUZZ" not in args.url:
+        print("[bold red]Error: URL must contain the FUZZ keyword (e.g. https://target.com/FUZZ)[/bold red]")
+        sys.exit(1)
 
     asyncio.run(
         fr3ki_fuzzer(
             args.url, args.wordlist, args.threads, args.verbose,
             args.output, args.obfuscate, args.rate, args.cooldown, args.debug,
-            args.proxies, args.custom_headers
+            args.proxies, args.custom_headers, args.method, args.filter_codes
         )
     )
 
